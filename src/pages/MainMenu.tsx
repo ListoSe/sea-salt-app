@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { RulesModal } from '../components/Rules';
 import logoImage from '../assets/en_280.png';
 import TitleImage from '../assets/fot2.png';
@@ -6,6 +7,21 @@ import Rules from '../assets/fot3.png';
 
 export default function MainMenu() {
   const [showRules, setShowRules] = useState(false);
+  const navigate = useNavigate();
+
+  const handleCreateGame = () => {
+    const roomId = Math.random().toString(36).substring(2, 6).toUpperCase();
+    navigate(`/game/${roomId}`);
+  };
+
+  const handleJoinGame = () => {
+    const code = prompt("Введіть 4-значний код кімнати:");
+    if (code && code.length === 4) {
+      navigate(`/game/${code.toUpperCase()}`);
+    } else if (code) {
+      alert("Код має складатися з 4 символів!");
+    }
+  };
 
   return (
     <div className="relative size-full min-h-screen overflow-hidden">
@@ -20,10 +36,16 @@ export default function MainMenu() {
         </div>
 
         <div className="flex flex-col sm:flex-row gap-4 w-full max-w-md">
-          <button className="flex-1 bg-gradient-to-r from-blue-500 to-cyan-500 text-white px-8 py-4 rounded-2xl shadow-lg transition-all hover:scale-105 active:scale-95">
+          <button 
+            onClick={handleCreateGame}
+            className="flex-1 bg-gradient-to-r from-blue-500 to-cyan-500 text-white px-8 py-4 rounded-2xl shadow-lg transition-all hover:scale-105 active:scale-95"
+          >
             Create Game
           </button>
-          <button className="flex-1 bg-white/10 backdrop-blur-md text-white border-2 border-white/30 px-8 py-4 rounded-2xl transition-all hover:scale-105 active:scale-95">
+          <button 
+            onClick={handleJoinGame}
+            className="flex-1 bg-white/10 backdrop-blur-md text-white border-2 border-white/30 px-8 py-4 rounded-2xl transition-all hover:scale-105 active:scale-95"
+          >
             Join Game
           </button>
         </div>
