@@ -14,6 +14,16 @@ export function GamePage() {
   const [myHand, setMyHand] = useState<number[]>([]);
   const [keptCard, setKeptCard] = useState<number | null>(null);
   const [opponentHandCount, setOpponentHandCount] = useState(0);
+  const [selectedCards, setSelectedCards] = useState<number[]>([]);
+  const [myPlayedCards, setMyPlayedCards] = useState<number[]>([]);
+  const [oppPlayedCards, setOppPlayedCards] = useState<number[]>([]);
+  const [hasDrawn, setHasDrawn] = useState(false);
+  const [myRoundScore, setMyRoundScore] = useState(0);
+  const [oppRoundScore, setOppRoundScore] = useState(0);
+  const [myTotalScore, setMyTotalScore] = useState(0);
+  const [oppTotalScore, setOppTotalScore] = useState(0);
+  const [isPickingFromCrab, setIsPickingFromCrab] = useState(false);
+  const [viewingStackIndex, setViewingStackIndex] = useState<number | null>(null);
 
   useEffect(() => {
     socket.connect();
@@ -29,6 +39,8 @@ export function GamePage() {
       setDeckCount(data.deckCount);
       setOpponentHandCount(0);
       setMyHand([]);
+      setMyPlayedCards([]);
+      setOppPlayedCards([]);
     });
 
     socket.on('update-opponent-count', (count) => {
@@ -36,18 +48,63 @@ export function GamePage() {
     });
 
     socket.on('choose-card', (cards) => {
-      setChoosingCards(cards); // Відкриваємо модалку вибору
+      setChoosingCards(cards);
     });
 
     socket.on('turn-completed', (data) => {
       setDiscards(data.discards);
       setDeckCount(data.deckCount);
-      // Якщо наступний хід мій (порівнюємо ID сокета)
       setIsMyTurn(data.nextTurn === socket.id);
+      setHasDrawn(data.hasDrawn);
+      const opponentId = Object.keys(data.handCounts).find(id => id !== socket.id);
+      if (opponentId) {
+        setOpponentHandCount(data.handCounts[opponentId]);
+      }
     });
 
     socket.on('update-hand', (hand) => {
       setMyHand(hand);
+    });
+
+    socket.on('pair-played', (data) => {
+      if (data.handCounts) {
+        const opponentId = Object.keys(data.handCounts).find(id => id !== socket.id);
+        if (opponentId) setOpponentHandCount(data.handCounts[opponentId]);
+      }
+
+      if (data.playerId === socket.id) {
+        setMyPlayedCards(prev => [...prev, ...data.cards]);
+        setSelectedCards([]);
+      } else {
+        setOppPlayedCards(prev => [...prev, ...data.cards]);
+      }
+
+      if (socket.id && data.scores) {
+        setMyRoundScore(data.scores.current[socket.id]);
+        const oppId = Object.keys(data.scores.current).find(id => id !== socket.id);
+        if (oppId) setOppRoundScore(data.scores.current[oppId]);
+
+        setMyTotalScore(data.scores.total[socket.id]);
+        if (oppId) setOppTotalScore(data.scores.total[oppId]);
+      }
+
+      switch (data.pairType) {
+        case 'boat':
+          setHasDrawn(false);
+          break;
+        case 'crab':
+          if (data.playerId === socket.id) {
+            setIsPickingFromCrab(true);
+          }
+          break;
+        case 'fish':
+          break;
+
+        case 'shark-swimmer':
+          break;
+      }
+
+
     });
 
     return () => {
@@ -56,7 +113,8 @@ export function GamePage() {
       socket.off('choose-card');
       socket.off('turn-completed');
       socket.off('update-hand');
-      socket.off('update-opponent-count')
+      socket.off('update-opponent-count');
+      socket.off('pair-played');
       socket.disconnect();
     };
   }, [roomId]);
@@ -66,7 +124,7 @@ export function GamePage() {
   };
 
   const handleDrawClick = () => {
-    if (!isMyTurn || choosingCards !== null) return; // Якщо не мій хід - нічого не робимо
+    if (!isMyTurn || choosingCards !== null || hasDrawn) return; // Якщо не мій хід - нічого не робимо
     socket.emit('request-draw', roomId);
   };
 
@@ -81,14 +139,43 @@ export function GamePage() {
   };
 
   const handleDiscardClick = (stackIndex: number) => {
+    const otherStackIndex = stackIndex === 0 ? 1 : 0;
+
     if (keptCard !== null) {
-      // Если мы на Шаге 2 (выбираем куда сбросить карту)
+      const isCurrentStackNotEmpty = discards[stackIndex].length > 0;
+      const isOtherStackEmpty = discards[otherStackIndex].length === 0;
+
+      if (isCurrentStackNotEmpty && isOtherStackEmpty) {
+        return;
+      }
+    }
+    if (isPickingFromCrab) {
+      setViewingStackIndex(stackIndex);
+      return;
+    }
+    if (keptCard !== null) {
       handlePickCard(keptCard, stackIndex);
-    } else if (isMyTurn && choosingCards === null) {
-      // В БУДУЩЕМ: Здесь будет логика "Взять карту ИЗ сброса"
-      console.log(`Взять карту из стопки ${stackIndex}`);
+    } else if (isMyTurn && choosingCards === null && !hasDrawn) {
+      socket.emit('pick-discard', { roomId, stackIndex });
     }
   };
+
+  const toggleCardSelection = (cardId: number) => {
+    if (selectedCards.includes(cardId)) {
+      setSelectedCards(selectedCards.filter(id => id !== cardId));
+    } else {
+      if (selectedCards.length < 2) {
+        setSelectedCards([...selectedCards, cardId]);
+      }
+    }
+  };
+
+  const handlePlayPair = () => {
+  if (selectedCards.length === 2) {
+    socket.emit('play-pair', { roomId, cards: selectedCards });
+    setSelectedCards([]);
+  }
+};
 
   const getHintMessage = () => {
     if (playersCount < 2) {
@@ -99,30 +186,64 @@ export function GamePage() {
       return <span className="text-gray-500 font-medium">Хід суперника. Зачекайте...</span>;
     }
 
-    if (choosingCards === null) {
+    if (choosingCards !== null) {
+      if (keptCard === null) {
+        return <span className="text-green-600 font-bold animate-pulse">Крок 1: Виберіть карту, яку хочете залишити.</span>;
+      }
+      return <span className="text-red-600 font-bold animate-pulse">Крок 2: Клікніть на одну зі стопок скиду.</span>;
+    }
+
+    if (selectedCards.length === 2 && choosingCards === null) {
       return (
-        <>
-          <span className="text-blue-600 font-bold">Ваш хід!</span>
-          <span className="text-gray-800"> Візьміть карту з колоди або зі стопки скиду.</span>
-        </>
+        <button
+          onClick={handlePlayPair}
+          className="px-6 py-1 bg-yellow-500 hover:bg-yellow-400 text-white font-black rounded-full transition-all border-2"
+        >
+          Зіграти пару!
+        </button>
       );
     }
 
-    if (keptCard === null) {
-      return <span className="text-green-600 font-bold animate-pulse">Крок 1: Виберіть карту, яку хочете залишити.</span>;
+    if (hasDrawn) {
+      return (
+        <div className="flex items-center gap-4">
+          <span className="text-red-600 font-bold animate-pulse">Можете зіграти пари або:</span>
+          <button
+            onClick={handleEndTurn}
+            className="px-6 py-1 bg-red-500 hover:bg-red-400 text-white font-black rounded-full transition-all border-2"
+          >
+            Закінчити хід
+          </button>
+        </div>
+      );
     }
 
-    return <span className="text-red-600 font-bold animate-pulse">Крок 2: Клікніть на одну зі стопок скиду.</span>;
+    return (
+      <>
+        <span className="text-blue-600 font-bold">Ваш хід!</span>
+        <span className="text-gray-800"> Візьміть карту або виберіть пару у руці.</span>
+      </>
+    );
+
   };
 
-  const getDiscardStyles = () => {
+  const getDiscardStyles = (stackIndex: number) => {
+    const otherStackIndex = stackIndex === 0 ? 1 : 0;
+    if (keptCard !== null && discards[stackIndex].length > 0 && discards[otherStackIndex].length === 0) {
+      return "opacity-50 cursor-not-allowed grayscale";
+    }
     if (keptCard !== null) {
       return "cursor-pointer ring-4 ring-red-400 animate-pulse hover:scale-105 transition-all rounded-lg";
     }
-    if (isMyTurn && choosingCards === null) {
+    if (isMyTurn && !hasDrawn && choosingCards === null) {
       return "cursor-pointer hover:scale-105 hover:ring-2 hover:ring-blue-400 transition-all duration-300 rounded-lg";
     }
     return "";
+  };
+
+  const handleEndTurn = () => {
+    socket.emit('end-turn', roomId);
+    setSelectedCards([]);
   };
 
   return (
@@ -162,9 +283,9 @@ export function GamePage() {
             )}
 
             <div className="flex-1 text-center bg-white/60 py-1.5 px-4 rounded-full border border-gray-200 shadow-sm mx-4 transition-all">
-              <p className="text-sm">
+              <div className="text-sm">
                 {getHintMessage()}
-              </p>
+              </div>
             </div>
 
             <div className="flex-1 flex items-center justify-end gap-3">
@@ -195,7 +316,7 @@ export function GamePage() {
                   <div className="flex flex-col gap-6">
                     {/* Deck Stack */}
                     <div onClick={handleDrawClick} className={`flex flex-col items-center transition-all duration-300 ${isMyTurn ? 'cursor-pointer hover:scale-105' : 'opacity-50 cursor-not-allowed'}`}>
-                      <Card type="deck" highlighted={isMyTurn} isback={true} />
+                      <Card type="deck" highlighted={!hasDrawn && isMyTurn} isback={true} />
                       <div className="mt-3 text-center">
                         <span className="text-gray-700 text-sm font-medium bg-gray-200 px-3 py-1 rounded-full">
                           {deckCount}
@@ -206,27 +327,21 @@ export function GamePage() {
                     {/* Face-up Cards */}
                     <div className="flex flex-col gap-3 items-center">
                       {discards[0] && discards[0].length > 0 ? (
-                        <div onClick={() => handleDiscardClick(0)} className={getDiscardStyles()}
-                        // className={`transition-all duration-300 ${isMyTurn ? 'cursor-pointer hover:scale-105 hover:ring-2 hover:ring-blue-400 rounded-lg' : ''}`}
-                        // onClick={() => handleDrawFromDiscard(0)} // Розкоментуємо, коли додамо функцію взяття зі скиду
-                        >
+                        <div onClick={() => handleDiscardClick(0)} className={getDiscardStyles(0)}>
                           <Card index={discards[0][discards[0].length - 1]} />
                         </div>
                       ) : (
-                        <div onClick={() => handleDiscardClick(0)} className={`w-20 h-28 border-2 border-dashed border-gray-300 flex flex-col items-center justify-center bg-white/50 text-xs text-gray-400 font-medium relative ${getDiscardStyles()}`}>
+                        <div onClick={() => handleDiscardClick(0)} className={`w-20 h-28 border-2 border-dashed border-gray-300 flex flex-col items-center justify-center bg-white/50 text-xs text-gray-400 font-medium relative ${getDiscardStyles(0)}`}>
                           Empty
                         </div>
                       )}
 
                       {discards[1] && discards[1].length > 0 ? (
-                        <div onClick={() => handleDiscardClick(1)} className={getDiscardStyles()}
-                        // className={`transition-all duration-300 ${isMyTurn ? 'cursor-pointer hover:scale-105 hover:ring-2 hover:ring-blue-400 rounded-lg' : ''}`}
-                        // onClick={() => handleDrawFromDiscard(1)} // Розкоментуємо, коли додамо функцію
-                        >
+                        <div onClick={() => handleDiscardClick(1)} className={getDiscardStyles(1)}>
                           <Card index={discards[1][discards[1].length - 1]} />
                         </div>
                       ) : (
-                        <div onClick={() => handleDiscardClick(1)} className={`w-20 h-28 border-2 border-dashed border-gray-300 flex flex-col items-center justify-center bg-white/50 text-xs text-gray-400 font-medium relative ${getDiscardStyles()}`}>
+                        <div onClick={() => handleDiscardClick(1)} className={`w-20 h-28 border-2 border-dashed border-gray-300 flex flex-col items-center justify-center bg-white/50 text-xs text-gray-400 font-medium relative ${getDiscardStyles(1)}`}>
                           Empty
                         </div>
                       )}
@@ -265,28 +380,39 @@ export function GamePage() {
               <div className="bg-white/90 backdrop-blur-sm rounded-xl border border-gray-200 shadow-lg overflow-hidden">
                 <div className="p-5 h-full flex flex-col">
                   <h2 className="text-lg font-medium text-gray-800 mb-3 text-center">
-                    - You - (Points: 0)
+                    - You - {myRoundScore} (Total Points: {myTotalScore})
                   </h2>
 
                   <div className="flex-1 bg-gray-50/50 rounded-lg border border-gray-200 p-4">
                     <div className="text-center text-gray-400 text-sm">
                       <div className="flex flex-wrap gap-2 justify-center">
-                        {(myHand.length > 0 || keptCard !== null) ? (
-                          <>
-                            {myHand.map((cardIndex, i) => (
-                              <Card key={`hand-${i}`} index={cardIndex} />
-                            ))}
-
-                            {keptCard !== null && (
-                              <Card index={keptCard} />
-                            )}
-                          </>
-                        ) : (
-                          <div className="text-center text-gray-400 text-sm w-full">
-                            Your cards will appear here
-                          </div>
-                        )}
-                      </div>
+                          {(myHand.length > 0 || keptCard !== null) ? (
+                            <>
+                              {myHand.map((cardIndex, i) => {
+                                const isSelected = selectedCards.includes(cardIndex);
+                                return <Card key={`hand-${i}`} index={cardIndex} {...(choosingCards == null) && {onClick: () => toggleCardSelection(cardIndex), highlighted: isSelected}} />;
+                              })}
+  
+                              {keptCard !== null && (
+                                <Card index={keptCard} />
+                              )}
+                            </>
+                          ) : (
+                            <div className="text-center text-gray-400 text-sm w-full">
+                              Your cards will appear here
+                            </div>
+                          )}
+                        </div>
+                    </div>
+                  </div>
+                  <div className="mt-4 p-3 bg-blue-50/50 rounded-xl border border-blue-100">
+                    <p className="text-[10px] font-bold text-blue-500 uppercase mb-2 tracking-wider">Твої пари:</p>
+                    <div className="flex flex-wrap gap-y-4 justify-center">
+                      {myPlayedCards.map((cardIndex, i) => (
+                        <div key={`my-played-${i}`} className="scale-75 origin-center -mx-4 first:ml-0">
+                          <Card index={cardIndex} />
+                        </div>
+                      ))}
                     </div>
                   </div>
                 </div>
@@ -297,7 +423,7 @@ export function GamePage() {
                 <div className="p-5 h-full flex flex-col">
                   <div className="flex items-center justify-center gap-2 mb-3">
                     <h2 className="text-lg font-medium text-gray-800">
-                      Опонент (Points: 0)
+                      Opponent {oppRoundScore} (Total Points: {oppTotalScore})
                     </h2>
                   </div>
 
@@ -316,6 +442,16 @@ export function GamePage() {
                       )}
                     </div>
                   </div>
+                  <div className="mt-4 p-3 bg-red-50/50 rounded-xl border border-red-100">
+                    <p className="text-[10px] font-bold text-red-500 uppercase mb-2 tracking-wider">Пари суперника:</p>
+                    <div className="flex flex-wrap gap-y-4 justify-center">
+                      {oppPlayedCards.map((cardIndex, i) => (
+                        <div key={`opp-played-${i}`} className="scale-75 origin-center -mx-4 first:ml-0">
+                          <Card index={cardIndex} />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -324,6 +460,29 @@ export function GamePage() {
         </div>
 
       </div>
+      {viewingStackIndex !== null && (
+        <div className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-md flex flex-col items-center justify-center p-10">
+          <h2 className="text-white text-3xl font-black mb-10 uppercase tracking-widest">
+            Ефект Краба: <span className="text-green-400">Виберіть карту</span>
+          </h2>
+          
+          <div className="flex flex-wrap gap-4 justify-center max-w-6xl overflow-y-auto p-6 bg-white/5 rounded-3xl border border-white/10">
+            {discards[viewingStackIndex].map((cardId, idx) => (
+              <div 
+                key={`${cardId}-${idx}`} 
+                onClick={() => {
+                  socket.emit('pick-from-discard-crab', { roomId, cardId, stackIndex: viewingStackIndex });
+                  setViewingStackIndex(null);
+                  setIsPickingFromCrab(false);
+                }}
+                className="cursor-pointer hover:scale-110 hover:-translate-y-6 transition-all duration-300"
+              >
+                <Card index={cardId} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
