@@ -4,9 +4,8 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 
 import { FULL_DECK } from './constants/deck.js';
-import { playPair } from './hooks/gameLogic.js';
-import { shuffle, getRoomData } from './utils/gameUtils.js';
-import { handleCrabPick } from './hooks/gameLogic.js';
+import { playPair, handleCrabPick } from './hooks/gameLogic.js';
+import { shuffle, getRoomData, calculatePlayerScore, processScoreUpdate, handleInstantWin, finishRound, calculateFinalScores } from './utils/gameUtils.js';
 
 
 const app = express();
@@ -23,56 +22,114 @@ const io = new Server(server, {
 const rooms = {};
 
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
+  const userId = socket.handshake.query.userId;
+  console.log(`[Socket Connected] ID: ${socket.id} | User: ${userId}`);
+
+  socket.on('create-room', (roomId) => {
+    rooms[roomId] = {
+      players: [],
+      deck: [],
+      totalScores: {},
+      currentScores: {},
+      tempCards: {},
+      activeCrab: {},
+      gameState: 'waiting',
+      hasDrawn: false,
+      hands: {},
+      playedCards: {}
+    };
+
+    console.log(`[Room Created] ID: ${roomId} by User: ${userId}`);
+    socket.emit('room-created', roomId);
+  });
 
   socket.on('join-room', (roomId) => {
-    socket.join(roomId);
+    const room = rooms[roomId];
 
-    if (!rooms[roomId]) {
-      // поменять навыдачу ошибки на создание комнаты, если её нет
-      rooms[roomId] = {
-        players: [],
-        deck: [],
-        totalScores: {},
-        currentScores: {},
-        gameState: 'waiting',
-        hasDrawn: false
-      };
+    if (!room) {
+      socket.emit('join-error', 'Комната не найдена. Создайте новую или проверьте ID.');
+      return;
     }
 
-    // Додаємо гравця, якщо його ще немає
-    if (rooms[roomId].players.length < 2 && !rooms[roomId].players.includes(socket.id)) {
-      rooms[roomId].players.push(socket.id);
-      console.log(`User ${socket.id} joined room ${roomId}`);
+    socket.join(roomId);
+    const existingPlayer = room.players.find(p => p.userId === userId);
+
+    if (existingPlayer) {
+      existingPlayer.socketId = socket.id;
+      console.log(`[Reconnect] User: ${userId} -> Room: ${roomId}`);
+    } else {
+      if (room.players.length >= 2) {
+        socket.emit('join-error', 'Комната уже заполнена');
+        socket.leave(roomId);
+        return;
+      }
+      room.players.push({ userId, socketId: socket.id });
+      console.log(`[Join] User: ${userId} joined Room: ${roomId}`);
     }
 
     io.to(roomId).emit('room-status', {
-      playersCount: rooms[roomId].players.length,
-      gameState: rooms[roomId].gameState
+      playersCount: room.players.length,
+      gameState: room.gameState
     });
+
+    if (room.gameState === 'playing') {
+      const myPrivateScore = calculatePlayerScore(room.hands[userId] || [], room.playedCards[userId] || []);
+
+      socket.emit('reconnect-game', {
+        hand: room.hands[userId] || [],
+        roomData: getRoomData(room, userId),
+        privateScore: myPrivateScore
+      });
+    }
+  });
+
+  socket.on('check-room', (roomId) => {
+    if (rooms[roomId]) {
+      socket.emit('room-exists', roomId);
+    } else {
+      socket.emit('join-error', 'Кімната з таким кодом не знайдена!');
+    }
   });
 
   socket.on('start-game', (roomId) => {
     const room = rooms[roomId];
+    console.log("--- START GAME DEBUG ---");
+    console.log("Room ID:", roomId);
+    console.log("Current TotalScores in memory:", room?.totalScores);
+
     if (room && room.players.length === 2) {
-      room.hasDrawn = false;
+      if (!room.totalScores) {
+        room.totalScores = {};
+      }
       room.deck = shuffle(FULL_DECK.map(card => card.id));
-      room.hands = { [room.players[0]]: [], [room.players[1]]: [] };
+      room.hands = { [room.players[0].userId]: [], [room.players[1].userId]: [] };
+      room.playedCards = {};
+      room.currentScores = {};
+      room.hasDrawn = false;
+      room.lastChanceActive = false;
       room.discards = [
         [room.deck.pop()],
         [room.deck.pop()]
       ];
-      room.currentTurn = room.players[0];
+      room.currentTurn = room.players[0].userId;
       room.gameState = 'playing';
 
-      room.players.forEach(playerId => {
-        if (room.totalScores[playerId] === undefined) room.totalScores[playerId] = 0;
-        room.currentScores[playerId] = 0; // поменять чтобы очки не сбрасывались при нажатии кнопки старт
+      room.players.forEach(player => {
+        const { userId, socketId } = player;
+        console.log(`Checking scores for user: ${userId}. Current val: ${room.totalScores[userId]}`);
 
-        io.to(playerId).emit('game-started', {
+        if (room.totalScores[userId] === undefined){
+          room.totalScores[userId] = 0;
+        } 
+        room.hands[userId] = [];
+        room.currentScores[userId] = 0;
+        room.playedCards[userId] = [];
+
+        io.to(socketId).emit('game-started', {
           discards: room.discards,
-          isMyTurn: room.currentTurn === playerId,
-          deckCount: room.deck.length
+          isMyTurn: room.currentTurn === userId,
+          deckCount: room.deck.length,
+          totalScores: room.totalScores
         });
       });
     }
@@ -80,42 +137,50 @@ io.on('connection', (socket) => {
 
   socket.on('request-draw', (roomId) => {
     const room = rooms[roomId];
-    if (room.currentTurn !== socket.id || room.hasDrawn) return;
+    if (room.currentTurn !== userId || room.hasDrawn) return;
     if (room.deck.length < 2) return;
     const drawnCards = [room.deck.pop(), room.deck.pop()];
-    room.tempCards = { [socket.id]: drawnCards };
+    room.tempCards[userId] = drawnCards;
     socket.emit('choose-card', drawnCards);
   });
 
   socket.on('pick-card', ({ roomId, pickedId, discardStackIndex }) => {
     const room = rooms[roomId];
-    const temp = room.tempCards[socket.id];
+
+    if (!room || room.currentTurn !== userId) return;
+
+    const temp = room.tempCards[userId];
     const pickedCard = pickedId;
     const discardedCard = temp.find(id => id !== pickedId);
 
-    // Оновлюємо стан на сервері
-    room.hands[socket.id].push(pickedCard);
+    room.hands[userId].push(pickedCard);
     room.discards[discardStackIndex].push(discardedCard);
-    delete room.tempCards[socket.id];
+    delete room.tempCards[userId];
 
     room.hasDrawn = true;
 
+    const myPrivateScore = calculatePlayerScore(room.hands[userId], room.playedCards[userId] || []);
+    processScoreUpdate(io, socket, rooms, roomId, userId, myPrivateScore);
+
     io.to(roomId).emit('turn-completed', getRoomData(room));
-    socket.emit('update-hand', room.hands[socket.id]);
+    socket.emit('update-hand', room.hands[userId]);
   });
 
   socket.on('pick-discard', ({ roomId, stackIndex }) => {
     const room = rooms[roomId];
-    if (room.currentTurn !== socket.id || room.hasDrawn) return;
+    if (room.currentTurn !== userId || room.hasDrawn) return;
 
     const stack = room.discards[stackIndex];
     if (stack.length === 0) return;
 
     const cardId = stack.pop();
-    room.hands[socket.id].push(cardId);
+    room.hands[userId].push(cardId);
     room.hasDrawn = true;
+    const myPrivateScore = calculatePlayerScore(room.hands[userId], room.playedCards[userId] || []);
+    processScoreUpdate(io, socket, rooms, roomId, userId, myPrivateScore);
+
     io.to(roomId).emit('turn-completed', getRoomData(room));
-    socket.emit('update-hand', room.hands[socket.id]);
+    socket.emit('update-hand', room.hands[userId]);
   });
 
   socket.on('play-pair', (data) => {
@@ -126,34 +191,77 @@ io.on('connection', (socket) => {
     handleCrabPick(io, socket, rooms, data);
   });
 
-  socket.on('end-turn', (roomId) => {
+  socket.on('declare-end-round', ({ roomId, type }) => {
     const room = rooms[roomId];
-    if (!room || room.currentTurn !== socket.id || !room.hasDrawn) return;
+    if (!room || room.currentTurn !== userId) return;
 
-    room.currentTurn = room.players.find(id => id !== socket.id);
+    if (type === 'STOP') {
+      const results = calculateFinalScores(room, userId, 'STOP');
+      finishRound(io, room, roomId, results);
+    } else {
+      room.lastChanceActive = true;
+      room.callerId = userId;
+
+      const opp = room.players.find(p => p.userId !== userId);
+      room.currentTurn = opp.userId;
+      room.hasDrawn = false;
+
+      io.to(roomId).emit('last-chance-started', {
+        callerId: userId,
+        nextTurn: room.currentTurn
+      });
+    }
+  });
+
+    socket.on('end-turn', (roomId) => {
+    const room = rooms[roomId];
+    if (!room || room.currentTurn !== userId || !room.hasDrawn) return;
+    
+    if (room.lastChanceActive) {
+      const results = calculateFinalScores(room, room.callerId, 'LAST_CHANCE');
+      finishRound(io, room, roomId, results);
+      return;
+    }
+
+    const opponent = room.players.find(p => p.userId !== userId);
+    if (opponent) {
+      room.currentTurn = opponent.userId;
+    }
     room.hasDrawn = false;
 
     io.to(roomId).emit('turn-completed', getRoomData(room));
   });
 
   socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
+    console.log(`[Socket Disconnected] ID: ${socket.id} | User: ${userId}`);
+
     for (const roomId in rooms) {
       const room = rooms[roomId];
-      const playerIndex = room.players.indexOf(socket.id);
+      if (!room || !room.players) {
+        continue;
+      }
+      const playerIndex = room.players.findIndex(p => p.socketId === socket.id);
 
       if (playerIndex !== -1) {
-        room.players.splice(playerIndex, 1);
-        console.log(`User ${socket.id} left room ${roomId}`);
+        if (room.gameState === 'waiting') {
+          const removedUser = room.players[playerIndex].userId;
 
-        if (room.players.length > 0) {
+          room.players.splice(playerIndex, 1);
+          console.log(`[Leave] User: ${removedUser} left Room: ${roomId} (Waiting state)`);
+
           io.to(roomId).emit('room-status', {
             playersCount: room.players.length,
             gameState: 'waiting'
           });
+
+          setTimeout(() => {
+            if (rooms[roomId] && rooms[roomId].players.length === 0) {
+              delete rooms[roomId];
+              console.log(`[Room Deleted] ID: ${roomId} (Empty)`);
+            }
+          }, 5000);
         } else {
-          delete rooms[roomId];
-          console.log(`Room ${roomId} deleted (empty)`);
+          console.log(`[Reconnection Wait] User: ${userId} disconnected. Game continues.`);
         }
         break;
       }

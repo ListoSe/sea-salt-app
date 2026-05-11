@@ -58,3 +58,5 @@ export const FULL_DECK = [
   { id: 61, name: 'swimmer', type: 'pair', color: 'lightblue' },
   { id: 62, name: 'mermaid', type: 'mermaid', color: 'mermaid' },
 ];
+
+export const PAIR_NAMES = ['boat', 'crab', 'fish', 'shark', 'swimmer'];

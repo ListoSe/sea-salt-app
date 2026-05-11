@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { socket } from '../utils/socket';
 import { useNavigate } from 'react-router-dom';
 import { RulesModal } from '../components/Rules';
 import logoImage from '../assets/en_280.png';
@@ -11,13 +12,27 @@ export default function MainMenu() {
 
   const handleCreateGame = () => {
     const roomId = Math.random().toString(36).substring(2, 6).toUpperCase();
-    navigate(`/game/${roomId}`);
+    if (!socket.connected) socket.connect();
+    socket.emit('create-room', roomId);
+    socket.once('room-created', (id) => {
+      navigate(`/game/${id}`);
+    });
+    socket.once('join-error', (msg) => alert(msg));
   };
 
   const handleJoinGame = () => {
     const code = prompt("Введіть 4-значний код кімнати:");
     if (code && code.length === 4) {
-      navigate(`/game/${code.toUpperCase()}`);
+      if (!socket.connected) socket.connect();
+      socket.emit('check-room', code.toUpperCase());
+
+      socket.once('room-exists', (id) => {
+        navigate(`/game/${id}`);
+      });
+
+      socket.once('join-error', (msg) => {
+        alert(msg);
+      });
     } else if (code) {
       alert("Код має складатися з 4 символів!");
     }
