@@ -7,14 +7,14 @@ import { FULL_DECK } from './constants/deck.js';
 import { playPair, handleCrabPick } from './hooks/gameLogic.js';
 import { shuffle, getRoomData, calculatePlayerScore, processScoreUpdate, handleInstantWin, finishRound, calculateFinalScores } from './utils/gameUtils.js';
 
-
+const PORT = process.env.PORT || 3001;// deploy
 const app = express();
 app.use(cors());
 
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:5173",
+    origin: "*", //http://localhost:5173
     methods: ["GET", "POST"]
   }
 });
@@ -269,6 +269,6 @@ io.on('connection', (socket) => {
   });
 });
 
-server.listen(3001, () => {
-  console.log('SERVER RUNNING ON PORT 3001');
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`SERVER RUNNING ON PORT ${PORT}`);
 });
