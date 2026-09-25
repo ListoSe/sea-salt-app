@@ -23,13 +23,13 @@ A web-based multiplayer implementation of the card game "Sea Salt & Paper" for t
    cd sea-salt-app
    ```
 
-2. Install dependencies:
+2. **Install dependencies:**
   ```bash
   npm install
   cd server && npm install
   ```
 
-3. Run the development environment:
+3. **Run the development environment:**
   ```bash
   # Start frontend (Vite)
   npm run dev
