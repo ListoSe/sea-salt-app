@@ -60,7 +60,7 @@ A web-based multiplayer implementation of the card game "Sea Salt & Paper" for t
    Comment out the localhost URL and activate your production Render URL:
    
    ```typescript
-   const URL = '[https://sea-salt-app.onrender.com](https://sea-salt-app.onrender.com)';
+   const URL = 'your production Render URL';
    ```
 
 Build the production files:
@@ -72,4 +72,4 @@ Build the production files:
 ## 👨‍💻 Author
    **Serhii Chernyshov**
    
-   GitHub Profile - ListoSe
+   GitHub Profile - [ListoSe](https://github.com/ListoSe)
